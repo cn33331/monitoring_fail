@@ -16,6 +16,7 @@ from pathlib import Path
 from ui.main import Ui_ui_test  # 从生成的UI文件导入
 from monitoringCSV import BasicFileHandler
 from dataSQL import TestData
+from readMD import MDViewer
 
 
 if getattr(sys, 'frozen', False):
@@ -27,6 +28,7 @@ else:
 
 file_path = os.path.join(app_path, "test_data.db")
 CONFIG_PATH = os.path.join(app_path, 'config.json')
+SOP_MD_PATH = os.path.join(app_path, 'sop.md')
 
 
 def enable_drag_drop(line_edit: QLineEdit):
@@ -100,6 +102,9 @@ class failInfoWindow(QWidget, Ui_ui_test):
         super().__init__()
         self.setupUi(self)  # 初始化UI
         QApplication.setStyle(QStyleFactory.create("Fusion"))
+
+        self.init_sop_ui()
+        
         self.db_path = file_path
         self.monitor_dir = Path("~/Library/Logs/Atlas/unit-archive").expanduser()
         self.monitor_thread = None
@@ -127,6 +132,9 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.pushButton_get_failcsv.clicked.connect(self.get_fail_csv)
 
         self.init_monitoring()
+    
+    def init_sop_ui(self):
+        MDViewer(md_path=SOP_MD_PATH, browser=self.textBrowser_md)
 
     def init_monitoring(self):
         """初始化监控系统"""
