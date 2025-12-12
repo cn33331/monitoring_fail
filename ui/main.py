@@ -69,6 +69,7 @@ class Ui_ui_test(object):
         self.pushButton_slotid_name.setObjectName("pushButton_slotid_name")
         self.horizontalLayout_2.addWidget(self.pushButton_slotid_name)
         self.lineEdit_slotid_name = QtWidgets.QLineEdit(parent=self.groupBox_config)
+        self.lineEdit_slotid_name.setReadOnly(True)
         self.lineEdit_slotid_name.setObjectName("lineEdit_slotid_name")
         self.horizontalLayout_2.addWidget(self.lineEdit_slotid_name)
         self.verticalLayout_7.addLayout(self.horizontalLayout_2)
@@ -114,7 +115,7 @@ class Ui_ui_test(object):
         self.horizontalLayout_3.addWidget(self.tabWidget)
 
         self.retranslateUi(ui_test)
-        self.tabWidget.setCurrentIndex(1)
+        self.tabWidget.setCurrentIndex(0)
         QtCore.QMetaObject.connectSlotsByName(ui_test)
 
     def retranslateUi(self, ui_test):

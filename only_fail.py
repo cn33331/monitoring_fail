@@ -17,6 +17,7 @@ from ui.main import Ui_ui_test  # 从生成的UI文件导入
 from monitoringCSV import BasicFileHandler
 from dataSQL import TestData
 from readMD import MDViewer
+from jsonInfo import JsonComponentBinder
 
 
 if getattr(sys, 'frozen', False):
@@ -101,40 +102,58 @@ class failInfoWindow(QWidget, Ui_ui_test):
     def __init__(self):
         super().__init__()
         self.setupUi(self)  # 初始化UI
-        QApplication.setStyle(QStyleFactory.create("Fusion"))
+        QApplication.setStyle(QStyleFactory.create("Fusion"))#确认ui的样式
 
+        # 初始化sop_UI,加载md文件并显示
         self.init_sop_ui()
-        
-        self.db_path = file_path
-        self.monitor_dir = Path("~/Library/Logs/Atlas/unit-archive").expanduser()
-        self.monitor_thread = None
-        self.test_data = None
-        self.slot_id_test_name = "ID"
+        # 初始化ui的配置信息
+        self.init_json_info()
 
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                if "slot_id_test_name" in config:
-                    self.slot_id_test_name = config["slot_id_test_name"]
-                else:
-                    self.slot_id_test_name = "ID"
-        finally:
-            print("self.slot_id_test_name",self.slot_id_test_name)
+        #初始化一些参数
+        self.db_path = file_path #数据库文件地址
+        self.monitor_dir = Path("~/Library/Logs/Atlas/unit-archive").expanduser() #被监控的文件夹地址
+        self.monitor_thread = None #监控线程
+        self.test_data = None #数据库类的实例
 
-        #初始化时间标签
+        #初始化时间标签，显示监听事件～当前时间
         self.init_time_range_label()
         #初始化显示fail信息的表格
         self.init_table_fail()
+
         #获取fail-csv的文件夹路径
         enable_drag_drop(self.textEdit_logpath)
 
+        #清除数据并重启监控，删掉数据库，还有表格的内容
         self.pushButton_clear.clicked.connect(self.clear_status)
+        #获取指定文件夹里的fail数据，存在数据库中并显示在ui上
         self.pushButton_get_failcsv.clicked.connect(self.get_fail_csv)
+        #修改通道id文本框的状态，不允许随意修改
+        self.pushButton_slotid_name.clicked.connect(self._toggle_edit_state)
 
+        #开启监控线程
         self.init_monitoring()
     
+    def _toggle_edit_state(self):
+        current_state = self.lineEdit_slotid_name.isReadOnly()
+        new_state = not current_state
+        self.lineEdit_slotid_name.setReadOnly(new_state)
+
     def init_sop_ui(self):
         MDViewer(md_path=SOP_MD_PATH, browser=self.textBrowser_md)
+
+    def init_json_info(self):
+        self.json_binder = JsonComponentBinder(CONFIG_PATH)
+        self._bind_components()
+
+    def _bind_components(self):
+        """绑定组件与JSON"""
+        # 1. 绑定QLineEdit（文本变化同步）
+        self.json_binder.bind_component(
+            config_key="slot_id_test_name",
+            component=self.lineEdit_slotid_name,
+            prop_name="text",
+            signal=self.lineEdit_slotid_name.textChanged
+        )
 
     def init_monitoring(self):
         """初始化监控系统"""

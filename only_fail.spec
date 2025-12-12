@@ -45,5 +45,5 @@ app = BUNDLE(
     name='监控fail.app',
     icon='/Users/gdlocal/Desktop/myCode/monitoring_fail/static/1.ico',
     bundle_identifier=None,
-    version='0.1'  # 添加版本号
+    version='0.2'  # 添加版本号
 )
