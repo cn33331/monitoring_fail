@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 import queue
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout,QHeaderView,
-                             QPushButton, QLineEdit, QLabel, QTableWidget, 
+                             QPushButton, QLineEdit, QLabel, QTableWidget, QMainWindow,
                              QTableWidgetItem,QMessageBox,QAbstractItemView)
 from PyQt6.QtCore import QTimer, QDateTime, Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QColor
@@ -18,6 +18,7 @@ from monitoringCSV import BasicFileHandler
 from dataSQL import TestData
 from readMD import MDViewer
 from jsonInfo import JsonComponentBinder
+from FilterConfigInfoUI import FilterConfigInfoUI
 
 
 if getattr(sys, 'frozen', False):
@@ -28,7 +29,7 @@ else:
     app_path = os.path.dirname(os.path.abspath(__file__))
 
 file_path = os.path.join(app_path, "test_data.db")
-CONFIG_PATH = os.path.join(app_path, 'config.json')
+CONFIG_PATH = os.path.join(os.path.join(app_path,"config"), 'config.json')
 SOP_MD_PATH = os.path.join(app_path, 'sop.md')
 
 
@@ -98,11 +99,14 @@ class MonitorThread(QThread):
         self.requestInterruption()
         self.wait()
 
-class failInfoWindow(QWidget, Ui_ui_test):
+class failInfoWindow(QMainWindow, Ui_ui_test):
     def __init__(self):
         super().__init__()
         self.setupUi(self)  # 初始化UI
         QApplication.setStyle(QStyleFactory.create("Fusion"))#确认ui的样式
+
+        #初始化创建插件UI实例
+        self.FilterConfigInfoUI = FilterConfigInfoUI(parent=self)  # 绑定父对象，避免内存泄漏
 
         # 初始化sop_UI,加载md文件并显示
         self.init_sop_ui()
@@ -129,10 +133,19 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.pushButton_get_failcsv.clicked.connect(self.get_fail_csv)
         #修改通道id文本框的状态，不允许随意修改
         self.pushButton_slotid_name.clicked.connect(self._toggle_edit_state)
+        #点击Action打开配置筛选的ui
+        self.actionchang.triggered.connect(self.open_filter_config_ui)
 
         #开启监控线程
         self.init_monitoring()
-    
+
+    def open_filter_config_ui(self):
+        """点击Action打开/激活插件UI"""
+        self.FilterConfigInfoUI.show()  # 显示插件窗口
+        self.FilterConfigInfoUI.raise_()  # 提升到前台（避免被遮挡）
+        self.FilterConfigInfoUI.activateWindow()  # 激活窗口
+
+    #通过按钮，反转文本框的状态，可写-只读
     def _toggle_edit_state(self):
         current_state = self.lineEdit_slotid_name.isReadOnly()
         new_state = not current_state
@@ -145,8 +158,8 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.json_binder = JsonComponentBinder(CONFIG_PATH)
         self._bind_components()
 
+    #绑定组件与JSON
     def _bind_components(self):
-        """绑定组件与JSON"""
         # 1. 绑定QLineEdit（文本变化同步）
         self.json_binder.bind_component(
             config_key="slot_id_test_name",
@@ -155,8 +168,8 @@ class failInfoWindow(QWidget, Ui_ui_test):
             signal=self.lineEdit_slotid_name.textChanged
         )
 
+    # 初始化监控系统
     def init_monitoring(self):
-        """初始化监控系统"""
         # 确保监控目录存在
         self.monitor_dir.mkdir(parents=True,exist_ok=True)
         
@@ -169,8 +182,8 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.update_table_fail()
         print("初始化监控系统")
 
+    # 启动监控线程
     def start_monitor_thread(self):
-        """启动监控线程"""
         if self.monitor_thread and self.monitor_thread.isRunning():
             self.monitor_thread.stop()
         
@@ -183,8 +196,8 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.monitor_thread.delete_signal.connect(self.init_monitoring)
         self.monitor_thread.start()
 
+    # 清除数据并重启监控
     def clear_status(self):
-        """清除数据并重启监控"""
         try:
             # 停止当前监控
             if self.monitor_thread and self.monitor_thread.isRunning():
@@ -209,7 +222,7 @@ class failInfoWindow(QWidget, Ui_ui_test):
         except Exception as e:
             QMessageBox.warning(self, "错误", f"操作失败: {str(e)}")
         
-
+    #初始化时间标签
     def init_time_range_label(self):
         self.time_format = "yyyy-MM-dd HH:mm:ss"
         current_time = QDateTime.currentDateTime().toString(self.time_format)
@@ -218,6 +231,7 @@ class failInfoWindow(QWidget, Ui_ui_test):
 
         self.init_timer()
 
+    #时间标签的定时器
     def init_timer(self):
         """初始化定时器（每秒刷新一次当前时间）"""
         self.update_timer = QTimer(self)
@@ -225,23 +239,24 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.update_timer.timeout.connect(self.update_current_time)
         self.update_timer.start()  # 启动定时器
 
+    #实时更新时间标签
     def update_current_time(self):
-        """实时更新时间显示"""
         current_time = QDateTime.currentDateTime().toString(self.time_format)
         self.label_time.setText(f"{self.start_time}\n{current_time}")
 
+    #获取当前表格的排序状态（排序列、升降序）
     def _get_table_sort_state(self):
-        """获取当前表格的排序状态（排序列、升降序）"""
         header = self.tableWidget_fail.horizontalHeader()
         sort_column = header.sortIndicatorSection()  # 排序的列索引
         sort_order = header.sortIndicatorOrder()     # 升降序（Qt.AscendingOrder/Qt.DescendingOrder）
         return sort_column, sort_order
 
+    #恢复表格的排序状态
     def _restore_table_sort_state(self, sort_column, sort_order):
-        """恢复表格的排序状态"""
         if sort_column != -1:  # -1表示未排序
             self.tableWidget_fail.sortByColumn(sort_column, sort_order)
 
+    #初始化显示fail内容的表格
     def init_table_fail(self):
         # 1. 设置列数（9列）
         self.tableWidget_fail.setColumnCount(10)
@@ -279,8 +294,26 @@ class failInfoWindow(QWidget, Ui_ui_test):
         self.tableWidget_fail.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tableWidget_fail.setSortingEnabled(True)  # 初始启用排序
 
+    #从数据库获取fail的数据，增加筛选功能
+    def get_fail_data_filter(self):
+        start_datetime = self.FilterConfigInfoUI.get_start_datetime()
+        end_datetime = self.FilterConfigInfoUI.get_end_datetime()
+        test_item_exclude = self.FilterConfigInfoUI.get_test_item_exclude_str()
+        sn_filter = ""
+        slot_id_exclude = ""
+        fail_data = self.test_data.get_fail_data(
+            sn_filter=sn_filter,
+            test_item_exclude_str=test_item_exclude,
+            slot_id_exclude_str=slot_id_exclude,
+            start_time_str=start_datetime,
+            end_time_str=end_datetime
+        )
+        # print("fail_data",fail_data)
+        return fail_data
+
+    #更新fail表格的内容
     def update_table_fail(self):
-        self.fail_data = self.test_data.get_fail_data()
+        self.fail_data = self.get_fail_data_filter()
         if self.fail_data.empty:
             self.tableWidget_fail.setRowCount(0)
             return
@@ -352,6 +385,7 @@ class failInfoWindow(QWidget, Ui_ui_test):
         # 优化列宽（按钮列）
         self.tableWidget_fail.setColumnWidth(9, 120)
 
+    #fail表的最后一列，用于打开fail数据的原始路径
     def on_open_folder_clicked(self, df_index):
         """
         当“打开文件夹”按钮被点击时调用
@@ -379,6 +413,7 @@ class failInfoWindow(QWidget, Ui_ui_test):
         if not QDesktopServices.openUrl(url):
             QMessageBox.warning(self, "警告", f"无法打开文件夹: {folder_path}")
 
+    #按下按钮后，从指定文件夹获取fail数据，更新ui
     def get_fail_csv(self):
         log_path_str = self.textEdit_logpath.toPlainText()
         if log_path_str ==  "":
@@ -447,6 +482,7 @@ class failInfoWindow(QWidget, Ui_ui_test):
                               f"处理完成！\n共扫描 {len(records_files_found)} 个文件，\n其中 {processed_count} 个为新文件并已成功处理。")
 
 
+    #按下按钮后，从指定文件夹获取fail数据，单个解析，准备统一插入数据库
     def process_single_file(self, file_path, data_queue):
         """
         处理单个文件的逻辑，供线程池调用

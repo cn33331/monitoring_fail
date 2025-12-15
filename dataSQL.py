@@ -15,7 +15,7 @@ else:
     app_path = os.path.dirname(os.path.abspath(__file__))
 
 # 配置文件路径
-CONFIG_PATH = os.path.join(app_path, 'config.json')
+CONFIG_PATH = os.path.join(os.path.join(app_path,"config"), 'config.json')
 
 def calculate_file_md5(file_path: str, chunk_size: int = 4096) -> str:
     """
@@ -192,6 +192,7 @@ class TestData(object):
         conn.close()
         print(f"✅ 数据库初始化完成（文件路径：{self.DB_PATH}）")
 
+    #检查文件是否被处理，文件数据是否被加载到数据库里，文件夹地址和文件md5值，两个条件判断
     def is_file_processed(self,file_path: str) -> bool:
         conn = None
         current_file_md5 = calculate_file_md5(file_path)
@@ -229,7 +230,7 @@ class TestData(object):
             if conn:
                 conn.close()
 
-
+    #传递pd参数的某一行，测试名有两种情况。
     def get_test_name(self,row: pd.Series) -> str:
         test_name = "未知测试名"
         attribute_name = row.get('attributeName', "")
@@ -245,6 +246,7 @@ class TestData(object):
                 test_name = "_".join(test_name_parts)
         return test_name
 
+    #传递pd参数的某一行，测试值有两种情况，字符串或数字
     def get_test_value(self,row: pd.Series) -> str:
         attribute_value = row.get('attributeValue', "")
         if pd.notna(attribute_value) and str(attribute_value).strip():
@@ -254,10 +256,23 @@ class TestData(object):
             return str(measurement_value).strip()
         return "没值"
 
+    #单笔数据插入数据库中，是监控时候，当监控文件夹的文件出现新的测试数据时候使用
     def insert_test_data(self,df: pd.DataFrame, file_path: str) -> None:
         if self.is_file_processed(file_path):
             print(f"⚠️ 文件已经被存储不可以再存储")
             return
+
+        self.slot_id_test_name = "ID"
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                if "slot_id_test_name" in config:
+                    self.slot_id_test_name = config["slot_id_test_name"]
+                else:
+                    self.slot_id_test_name = "ID"
+        finally:
+            # print("self.slot_id_test_name",self.slot_id_test_name)
+            pass
 
         df,device_sn,test_time,slotId = self.handleDF(df)
 
@@ -331,47 +346,148 @@ class TestData(object):
         conn.close()
         return df.sort_values(['sn', 'test_time'])  # 按SN和时间排序
 
-    def get_fail_data(self, sn_filter=""):
+    def parse_exclude_str(self, exclude_str):
         """
-        获取测试失败的数据，排除test_item为CHECK_STATION_SECURITY和OrphanedRequiredLimits的记录
+        解析排除项字符串为列表（支持逗号/分号/空格分隔）
+        :param exclude_str: 排除项字符串，如 "CHECK_STATION_SECURITY,OrphanedRequiredLimits;OrphanedRecords"
+        :return: 去重后的排除项列表
+        """
+        if not exclude_str or exclude_str.strip() == "":
+            return []
+        # 支持多种分隔符：逗号、分号、空格、换行
+        separators = [',', ';', ' ', '\n', '\t']
+        exclude_list = exclude_str.strip()
+        for sep in separators:
+            exclude_list = exclude_list.replace(sep, ',')
+        # 拆分+去重+过滤空值
+        exclude_list = [item.strip() for item in exclude_list.split(',') if item.strip()]
+        return list(set(exclude_list))
+
+    def get_fail_data(self, 
+                      sn_filter="", 
+                      test_item_exclude_str="",
+                      slot_id_exclude_str="",
+                      start_time_str="",
+                      end_time_str=""):
+        """
+        获取测试失败的数据，支持多维度筛选
         :param sn_filter: SN筛选关键词（模糊匹配），默认为空不筛选
+        :param test_item_exclude_str: 排除的test_item字符串（多值用逗号/分号/空格分隔）
+        :param slot_id_exclude_str: 排除的slot_id字符串（多值用逗号/分号/空格分隔）
+        :param start_datetime: 开始时间（QDateTime对象），None则不限制
+        :param end_datetime: 结束时间（QDateTime对象），None则不限制
         :return: 筛选后的失败数据DataFrame
         """
         conn = sqlite3.connect(self.DB_PATH)
         try:
-            # 基础WHERE条件：失败、时间非未知、排除指定test_item
+            # ========== 1. 初始化基础条件和参数 ==========
             base_conditions = [
                 "test_result = 'FAIL'",
-                "test_time != '未知时间'",
-                "test_time != 'OrphanedRequiredLimits'",
-                "test_item != 'CHECK_STATION_SECURITY'"
+                "test_time != '未知时间'"  # 排除无效时间
             ]
-            # 拼接SN筛选条件（如果有）
-            if sn_filter:
+            query_params = []
+
+            # ========== 2. 解析test_item排除条件 ==========
+            exclude_test_items = self.parse_exclude_str(test_item_exclude_str)
+            if exclude_test_items != "" :
+                # 生成 test_item NOT IN (?, ?, ...) 条件
+                placeholders = ', '.join(['?'] * len(exclude_test_items))
+                base_conditions.append(f"test_item NOT IN ({placeholders})")
+                query_params.extend(exclude_test_items)
+
+            # ========== 3. 解析slot_id排除条件 ==========
+            exclude_slot_ids = self.parse_exclude_str(slot_id_exclude_str)
+            if exclude_slot_ids:
+                # 注意：slot_id如果是数字类型，需确保传入的是数字字符串
+                placeholders = ', '.join(['?'] * len(exclude_slot_ids))
+                base_conditions.append(f"slot_id NOT IN ({placeholders})")
+                query_params.extend(exclude_slot_ids)
+
+            # ========== 4. 时间范围筛选（test_time） ==========
+            if start_time_str != "":
+                base_conditions.append("test_time >= ?")
+                query_params.append(start_time_str)
+
+            if end_time_str != "":
+                base_conditions.append("test_time <= ?")
+                query_params.append(end_time_str)
+
+            # ========== 5. SN模糊筛选 ==========
+            if sn_filter and sn_filter.strip():
                 base_conditions.append("sn LIKE ?")
-            
-            # 组装完整查询语句
+                query_params.append(f'%{sn_filter.strip()}%')
+
+            # ========== 6. 组装查询语句 ==========
             fail_query = f"""
             SELECT slot_id, sn, test_time, test_item, test_value, test_usl, test_lsl, test_result, file_path 
             FROM test_records 
             WHERE {' AND '.join(base_conditions)}
+            ORDER BY test_time DESC
             """
-            # 设置查询参数（仅SN筛选时有值）
-            fail_params = [f'%{sn_filter}%'] if sn_filter else []
-            
-            # 读取数据（解析test_time为日期类型）
+
+            # print("原始SQL：", fail_query)
+            # print("参数列表：", query_params)
+            # 手动替换占位符（仅调试，无需依赖sqlite3方法）
+            # temp_sql = fail_query
+            # for param in query_params:
+            #     temp_sql = temp_sql.replace('?', f"'{param}'", 1)
+            # print("拼接后SQL：", temp_sql)
+
+            # ========== 7. 执行查询 ==========
             fail_df = pd.read_sql(
-                fail_query, 
-                conn, 
-                params=fail_params, 
-                parse_dates=['test_time']
+                fail_query,
+                conn,
+                params=query_params,
+                parse_dates=['test_time']  # 自动解析为datetime类型
             )
+
         finally:
-            # 确保连接无论是否异常都关闭
             conn.close()
-        
+
         return fail_df
 
+    # def get_fail_data(self, sn_filter=""):
+    #     """
+    #     获取测试失败的数据，排除test_item为CHECK_STATION_SECURITY和OrphanedRequiredLimits的记录
+    #     :param sn_filter: SN筛选关键词（模糊匹配），默认为空不筛选
+    #     :return: 筛选后的失败数据DataFrame
+    #     """
+    #     conn = sqlite3.connect(self.DB_PATH)
+    #     try:
+    #         # 基础WHERE条件：失败、时间非未知、排除指定test_item
+    #         base_conditions = [
+    #             "test_result = 'FAIL'",
+    #             "test_time != '未知时间'",
+    #             "test_time != 'OrphanedRequiredLimits'",
+    #             "test_item != 'CHECK_STATION_SECURITY'"
+    #         ]
+    #         # 拼接SN筛选条件（如果有）
+    #         if sn_filter:
+    #             base_conditions.append("sn LIKE ?")
+            
+    #         # 组装完整查询语句
+    #         fail_query = f"""
+    #         SELECT slot_id, sn, test_time, test_item, test_value, test_usl, test_lsl, test_result, file_path 
+    #         FROM test_records 
+    #         WHERE {' AND '.join(base_conditions)}
+    #         """
+    #         # 设置查询参数（仅SN筛选时有值）
+    #         fail_params = [f'%{sn_filter}%'] if sn_filter else []
+            
+    #         # 读取数据（解析test_time为日期类型）
+    #         fail_df = pd.read_sql(
+    #             fail_query, 
+    #             conn, 
+    #             params=fail_params, 
+    #             parse_dates=['test_time']
+    #         )
+    #     finally:
+    #         # 确保连接无论是否异常都关闭
+    #         conn.close()
+        
+    #     return fail_df
+
+    #传入文件夹地址列表，判断表中的那些文件是否已经被处理过，返回没被处理文件地址列表
     def get_unprocessed_files(self, file_paths):
         """批量检查未处理文件，减少数据库查询次数"""
         if not file_paths:
@@ -401,18 +517,8 @@ class TestData(object):
         
         return unprocessed
         
-
+    #一个pd参数，代表的是records.csv，同一个csv，sn和通道号，测试结果和测试时间是一致的，单独解析出来
     def handleDF(self,df: pd.DataFrame):
-        self.slot_id_test_name = "ID"
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                if "slot_id_test_name" in config:
-                    self.slot_id_test_name = config["slot_id_test_name"]
-                else:
-                    self.slot_id_test_name = "ID"
-        finally:
-            print("self.slot_id_test_name",self.slot_id_test_name)
         """将适配后解析的测试数据批量插入数据库"""
         # 1. 基础校验：DataFrame为空或无必要列，直接返回
         required_cols = ['attributeName', 'attributeValue', "testName","subTestName","subSubTestName","upperLimit","measurementValue","lowerLimit","measurementUnits",'startTime', "stopTime", 'status']
@@ -446,8 +552,22 @@ class TestData(object):
         df = df.fillna("")  # 把所有 NaN 替换为空字符串（根据字段类型调整，比如数值型用 0）
         return df,device_sn,test_time,slotId
 
+    #批量插入数据到数据库中，是遍历某个文件夹得到的数据
     def batch_insert_test_data(self, batch_data):
         data_tuples_all = []
+
+        self.slot_id_test_name = "ID"
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                if "slot_id_test_name" in config:
+                    self.slot_id_test_name = config["slot_id_test_name"]
+                else:
+                    self.slot_id_test_name = "ID"
+        finally:
+            # print("self.slot_id_test_name",self.slot_id_test_name)
+            pass
+
         for df, file_path in batch_data:
             current_file_md5 = calculate_file_md5(file_path)
             df,device_sn,test_time,slotId = self.handleDF(df)
